@@ -513,7 +513,7 @@ fn do_ereport(ereport: ErrorReportWithLevel) {
     /// In this case, we only allocate file, lineno and funcname if `errstart` returns true
     #[inline(always)]
     #[rustfmt::skip]    // my opinion wins
-    #[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15", feature = "pg16"))]
+    #[cfg(any(feature = "pg13", feature = "pg14", feature = "pg15", feature = "pg16", feature = "gp7"))]
     fn do_ereport_impl(ereport: ErrorReportWithLevel) {
 
         extern "C" {
@@ -577,7 +577,7 @@ fn do_ereport(ereport: ErrorReportWithLevel) {
     /// to be freed in case level < ERROR
     #[inline(always)]
     #[rustfmt::skip]    // my opinion wins
-    #[cfg(any(feature = "pg12", feature = "gp7"))]
+    #[cfg(feature = "pg12")]
     fn do_ereport_impl(ereport: ErrorReportWithLevel) {
 
         extern "C" {

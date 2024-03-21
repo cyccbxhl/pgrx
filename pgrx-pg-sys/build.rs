@@ -11,7 +11,8 @@ use bindgen::callbacks::{DeriveTrait, ImplementsTrait, MacroParsingBehavior};
 use bindgen::NonCopyUnionStyle;
 use eyre::{eyre, WrapErr};
 use pgrx_pg_config::{
-    is_supported_major_version, prefix_path, PgConfig, PgConfigSelector, Pgrx, SUPPORTED_VERSIONS, GREENPLUM_VERSION_BASE
+    is_supported_major_version, prefix_path, PgConfig, PgConfigSelector, Pgrx, SUPPORTED_VERSIONS,
+    GREENPLUM_VERSION_BASE, pg_major_to_label
 };
 use quote::{quote, ToTokens};
 use std::cmp::Ordering;
@@ -153,11 +154,7 @@ fn main() -> eyre::Result<()> {
                     SUPPORTED_VERSIONS()
                         .iter()
                         .map(|version| {
-                            if version.major < GREENPLUM_VERSION_BASE {
-                                format!("pg{}", version.major)
-                            } else {
-                                format!("gp{}", version.major / GREENPLUM_VERSION_BASE)
-                            }
+                            pg_major_to_label(version.major)
                         })
                         .collect::<Vec<_>>()
                         .join(", ")
@@ -169,11 +166,7 @@ fn main() -> eyre::Result<()> {
                     versions
                         .iter()
                         .map(|version| {
-                            if version.major < GREENPLUM_VERSION_BASE {
-                                format!("pg{}", version.major)
-                            } else {
-                                format!("gp{}", version.major / GREENPLUM_VERSION_BASE)
-                            }
+                            pg_major_to_label(version.major)
                         })
                         .collect::<Vec<String>>()
                         .join(", ")
@@ -189,11 +182,7 @@ fn main() -> eyre::Result<()> {
             }
             vec![(major_version, pg_config)]
         } else {
-            let specific = if found_ver.major < GREENPLUM_VERSION_BASE {
-                Pgrx::from_config()?.get(&format!("pg{}", found_ver.major))?
-            } else {
-                Pgrx::from_config()?.get(&format!("gp{}", found_ver.major / GREENPLUM_VERSION_BASE))?
-            };
+            let specific = Pgrx::from_config()?.get(&pg_major_to_label(found_ver.major))?;
             vec![(found_ver.major, specific)]
         }
     };
@@ -780,11 +769,7 @@ fn run_bindgen(
         .default_non_copy_union_style(NonCopyUnionStyle::ManuallyDrop)
         .generate()
         .wrap_err_with(|| {
-            if major_version < GREENPLUM_VERSION_BASE {
-                format!("Unable to generate bindings for pg{}", major_version)
-            } else {
-                format!("Unable to generate bindings for gp{}", major_version / GREENPLUM_VERSION_BASE)
-            }
+            format!("Unable to generate bindings for {}", pg_major_to_label(major_version))
         })?;
 
     Ok(bindings.to_string())

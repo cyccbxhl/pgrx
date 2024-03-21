@@ -50,6 +50,15 @@ pub fn get_c_locale_flags() -> &'static [&'static str] {
     }
 }
 
+pub fn pg_major_to_label(pg_major: u16) -> String {
+    if pg_major < GREENPLUM_VERSION_BASE {
+        format!("pg{}", pg_major)
+    } else {
+        format!("gp{}", pg_major / GREENPLUM_VERSION_BASE)
+    }
+}
+
+
 // These methods were originally in `pgrx-utils`, but in an effort to consolidate
 // dependencies, the decision was made to package them into wherever made the
 // most sense. In this case, it made the most sense to put them into this
@@ -211,11 +220,7 @@ impl PgConfig {
 
     pub fn label(&self) -> eyre::Result<String> {
         let pg_major = self.major_version()?;
-        if pg_major < GREENPLUM_VERSION_BASE {
-            Ok(format!("pg{}", pg_major))
-        } else {
-            Ok(format!("gp{}", pg_major / GREENPLUM_VERSION_BASE))
-        }
+        Ok(pg_major_to_label(pg_major))
     }
 
     pub fn path(&self) -> Option<PathBuf> {
@@ -294,10 +299,9 @@ impl PgConfig {
         let version = version_parts
             .get(1)
             .ok_or_else(|| eyre!("invalid version string: {version_str}"))?
-            .split('+')
+            .split('.')
             .collect::<Vec<&str>>();
 
-        // assert_eq!(version.len(), 2);
         let gp_major_str = version
             .get(0)
             .ok_or_else(|| eyre::eyre!("no gp major in gp version str"))?
