@@ -17,7 +17,7 @@ to the `pgrx` framework and very subject to change between versions. While you m
 */
 use crate::composite_type::{handle_composite_type_macro, CompositeTypeMacro};
 use crate::lifetimes::anonymize_lifetimes;
-use proc_macro2::Span;
+
 use quote::ToTokens;
 use syn::parse::{Parse, ParseStream};
 use syn::spanned::Spanned;
@@ -70,23 +70,6 @@ impl UsedType {
             original => (original, None),
         };
 
-        // Resolve any `variadic` macro
-        // We do this first as it's **always** in the first position. It's not valid deeper in the type.
-        let resolved_ty = match resolved_ty {
-            // variadic!(..)
-            syn::Type::Macro(macro_pat) => {
-                let mac = &macro_pat.mac;
-                let archetype = mac.path.segments.last().expect("No last segment");
-                match archetype.ident.to_string().as_str() {
-                    "variadic" => {
-                        let ty: syn::Type = syn::parse2(mac.tokens.clone())?;
-                        syn::parse_quote! { ::pgrx::datum::VariadicArray<'_, #ty>}
-                    }
-                    _ => syn::Type::Macro(macro_pat),
-                }
-            }
-            original => original,
-        };
         // Now, resolve any `composite_type` macro
         let (resolved_ty, composite_type) = match resolved_ty {
             // composite_type!(..)
@@ -365,6 +348,15 @@ pub struct UsedTypeEntity {
     /// Set via the type being an `Option`.
     pub optional: bool,
     pub metadata: FunctionMetadataTypeEntity,
+}
+
+impl crate::TypeIdentifiable for UsedTypeEntity {
+    fn ty_id(&self) -> &core::any::TypeId {
+        &self.ty_id
+    }
+    fn ty_name(&self) -> &str {
+        self.full_path
+    }
 }
 
 fn resolve_vec_inner(
@@ -770,8 +762,9 @@ fn handle_default_macro(mac: &syn::Macro) -> syn::Result<(syn::Type, Option<Stri
                 let value = def.base10_digits();
                 Ok((true_ty, Some("-".to_owned() + value)))
             }
+            // FIXME: add a UI test for this
             _ => Err(syn::Error::new(
-                Span::call_site(),
+                mac.span(),
                 format!("Unrecognized UnaryExpr in `default!()` macro, got: {:?}", out.expr),
             )),
         },
@@ -781,8 +774,9 @@ fn handle_default_macro(mac: &syn::Macro) -> syn::Result<(syn::Type, Option<Stri
             if last_string == "NULL" {
                 Ok((true_ty, Some(last_string)))
             } else {
+                // FIXME: add a UI test for this
                 Err(syn::Error::new(
-                    Span::call_site(),
+                    mac.span(),
                     format!(
                         "Unable to parse default value of `default!()` macro, got: {:?}",
                         out.expr
@@ -790,8 +784,9 @@ fn handle_default_macro(mac: &syn::Macro) -> syn::Result<(syn::Type, Option<Stri
                 ))
             }
         }
+        // FIXME: add a UI test for this
         _ => Err(syn::Error::new(
-            Span::call_site(),
+            mac.span(),
             format!("Unable to parse default value of `default!()` macro, got: {:?}", out.expr),
         )),
     }

@@ -492,6 +492,11 @@ Rust `#[test]` functions behave normally, while `#[pg_test]` functions are run *
 Additionally, a `#[pg_test]` function runs in a transaction that is aborted when the test is finished. As such, any changes it might
 make to the database are not preserved.
 
+An administrative note is that the `--runas` and `--pgdata` options can be used to control the operating-system user used
+to run the separate `postmaster` process for test execution.  Likely, if `--runas` is used, then `--pgdata` will also need
+to be set to a base directory that is readable and writable by that user -- the default PGDATA directory at `./target/pgrx-test-pgdata` 
+will have the permissions of the user running `cargo pgrx test` and won't be chown-able to the `--runas` user.
+
 ```console
 $ cargo pgrx test --help
 Run the test suite for this crate
@@ -509,6 +514,8 @@ Options:
   -r, --release                        compile for release mode (default is debug)
       --profile <PROFILE>              Specific profile to use (conflicts with `--release`)
   -n, --no-schema                      Don't regenerate the schema
+      --runas <USER>                   Use `sudo` to initialize and run the Postgres test instance as this system user
+      --pgdata <DIR>                   Initialize the test database cluster here, instead of the default location.  If used with `--runas`, then it must be writable by the user
       --all-features                   Activate all available features
       --no-default-features            Do not activate the `default` feature
   -F, --features <FEATURES>            Space-separated list of features to activate
@@ -548,7 +555,7 @@ version of Postgres is likely to split `pg_config --pkglibdir` and `pg_config --
 version of Postgres 12.)
 
 This command could be useful from Dockerfiles, for example, to automate building installation packages for various Linux
-distobutions or MacOS Postgres installations.
+distributions or MacOS Postgres installations.
 
 ```console
 $ cargo pgrx package --help
@@ -603,6 +610,39 @@ Options:
   -h, --help                           Print help
   -V, --version                        Print version
 ```
+
+## Extension Version Upgrade Scripts
+
+When creating a pgrx extension using `cargo pgrx new foo`, the new extension template directory tree includes a 
+directory named `./sql`:
+
+```shell
+$ tree
+.
+├── Cargo.toml
+├── blah.control
+├── sql
+└── src
+    └── lib.rs
+
+2 directories, 3 files
+```
+
+It is in this directory that you would **manually** create extension version upgrade scripts.  The files you create should
+be named in the manner prescribed by the [Postgres Extension Updates documentation](https://www.postgresql.org/docs/current/extend-extensions.html#EXTEND-EXTENSIONS-UPDATES).
+Generally that format is `foo--oldver--newver.sql`.  For example, `foo--1.0.0--1.0.1.sql`.  
+
+When a user runs `ALTER EXTENSION foo UPDATE;` in a database with the `foo` extension, Postgres will build a graph of
+upgrade scripts to run, starting with the currently installed version and ending with the `default_version` defined in
+the extensions `.control` file.  Postgres will then execute the scripts along the shortest path.
+
+It is your responsibility to hand-write these extension upgrade scripts in whatever manner would allow Postgres to update
+your extension from one version to the next.  pgrx has no ability to auto-generate these scripts.
+
+While pgrx does not generate these upgrade scripts, it does now about them and all pgrx commands (`cargo pgrx test/run/install/package`) 
+that generate extension artifacts will automatically copy these files, and only these files, from the `./sql` directory 
+to their final destination as dictated by `pg_config`.
+
 
 ## Information about pgx-managed development environment
 

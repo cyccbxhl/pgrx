@@ -47,6 +47,7 @@ pub mod array;
 pub mod atomics;
 pub mod bgworkers;
 pub mod callbacks;
+pub mod callconv;
 pub mod datum;
 pub mod enum_helper;
 pub mod fcinfo;
@@ -68,6 +69,7 @@ pub mod misc;
 #[cfg(feature = "cshim")]
 pub mod namespace;
 pub mod nodes;
+pub mod nullable;
 pub mod pg_catalog;
 pub mod pgbox;
 pub mod rel;
@@ -75,7 +77,6 @@ pub mod shmem;
 pub mod spi;
 #[cfg(feature = "cshim")]
 pub mod spinlock;
-pub mod srf;
 pub mod stringinfo;
 pub mod trigger_support;
 pub mod tupdesc;

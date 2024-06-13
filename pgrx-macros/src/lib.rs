@@ -13,7 +13,7 @@ use proc_macro::TokenStream;
 use std::collections::HashSet;
 
 use proc_macro2::Ident;
-use quote::{quote, ToTokens};
+use quote::{format_ident, quote, ToTokens};
 use syn::spanned::Spanned;
 use syn::{parse_macro_input, Attribute, Data, DeriveInput, Item, ItemImpl};
 
@@ -103,7 +103,7 @@ pub fn pg_test(attr: TokenStream, item: TokenStream) -> TokenStream {
             };
 
             let sql_funcname = func.sig.ident.to_string();
-            let test_func_name = Ident::new(&format!("pg_{}", func.sig.ident), func.span());
+            let test_func_name = format_ident!("pg_{}", func.sig.ident);
 
             let attributes = func.attrs;
             let mut att_stream = proc_macro2::TokenStream::new();
@@ -704,6 +704,12 @@ fn impl_postgres_enum(ast: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
             }
 
         }
+
+        unsafe impl ::pgrx::callconv::BoxRet for #enum_ident {
+            unsafe fn box_in_fcinfo(self, fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> ::pgrx::pg_sys::Datum {
+                ::pgrx::datum::IntoDatum::into_datum(self).unwrap()
+            }
+        }
     });
 
     let sql_graph_entity_item = PostgresEnum::from_derive_input(sql_graph_entity_ast)?;
@@ -785,7 +791,7 @@ fn impl_postgres_type(ast: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
 
     let lifetime = match has_lifetimes {
         Some(lifetime) => quote! {#lifetime},
-        None => quote! {'static},
+        None => quote! {'_},
     };
 
     // all #[derive(PostgresType)] need to implement that trait
@@ -805,6 +811,15 @@ fn impl_postgres_type(ast: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
 
                     fn type_oid() -> ::pgrx::pg_sys::Oid {
                         ::pgrx::wrappers::rust_regtypein::<Self>()
+                    }
+                }
+
+                unsafe impl #generics ::pgrx::callconv::BoxRet for #name #generics {
+                    unsafe fn box_in_fcinfo(self, fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> ::pgrx::pg_sys::Datum {
+                        match ::pgrx::datum::IntoDatum::into_datum(self) {
+                            None => ::pgrx::fcinfo::pg_return_null(fcinfo),
+                            Some(datum) => datum,
+                        }
                     }
                 }
 
@@ -853,42 +868,29 @@ fn impl_postgres_type(ast: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
     // and if we don't have custom inout/funcs, we use the JsonInOutFuncs trait
     // which implements _in and _out #[pg_extern] functions that just return the type itself
     if args.contains(&PostgresTypeAttribute::Default) {
-        let inout_generics = if has_lifetimes.is_some() {
-            quote! {#generics}
-        } else {
-            quote! {<'_>}
-        };
-
         stream.extend(quote! {
-            impl #generics ::pgrx::inoutfuncs::JsonInOutFuncs #inout_generics for #name #generics {}
-
             #[doc(hidden)]
             #[::pgrx::pgrx_macros::pg_extern(immutable,parallel_safe)]
             pub fn #funcname_in #generics(input: Option<&#lifetime ::core::ffi::CStr>) -> Option<#name #generics> {
-                input.map_or_else(|| {
-                    for m in <#name as ::pgrx::inoutfuncs::JsonInOutFuncs>::NULL_ERROR_MESSAGE {
-                        ::pgrx::pg_sys::error!("{m}");
-                    }
-                    None
-                }, |i| Some(<#name as ::pgrx::inoutfuncs::JsonInOutFuncs>::input(i)))
+                use ::pgrx::inoutfuncs::json_from_slice;
+                input.map(|cstr| json_from_slice(cstr.to_bytes()).ok()).flatten()
             }
 
             #[doc(hidden)]
             #[::pgrx::pgrx_macros::pg_extern (immutable,parallel_safe)]
-            pub fn #funcname_out #generics(input: #name #generics) -> &'static ::core::ffi::CStr {
-                let mut buffer = ::pgrx::stringinfo::StringInfo::new();
-                ::pgrx::inoutfuncs::JsonInOutFuncs::output(&input, &mut buffer);
-                // SAFETY: We just constructed this StringInfo ourselves
-                unsafe { buffer.leak_cstr() }
+            pub fn #funcname_out #generics(input: #name #generics) -> ::pgrx::ffi::CString {
+                use ::pgrx::inoutfuncs::json_to_vec;
+                let mut bytes = json_to_vec(&input).unwrap();
+                bytes.push(0); // terminate
+                ::pgrx::ffi::CString::from_vec_with_nul(bytes).unwrap()
             }
-
         });
     } else if args.contains(&PostgresTypeAttribute::InOutFuncs) {
         // otherwise if it's InOutFuncs our _in/_out functions use an owned type instance
         stream.extend(quote! {
             #[doc(hidden)]
             #[::pgrx::pgrx_macros::pg_extern(immutable,parallel_safe)]
-            pub fn #funcname_in #generics(input: Option<&#lifetime ::core::ffi::CStr>) -> Option<#name #generics> {
+            pub fn #funcname_in #generics(input: Option<&::core::ffi::CStr>) -> Option<#name #generics> {
                 input.map_or_else(|| {
                     for m in <#name as ::pgrx::inoutfuncs::InOutFuncs>::NULL_ERROR_MESSAGE {
                         ::pgrx::pg_sys::error!("{m}");
@@ -899,11 +901,11 @@ fn impl_postgres_type(ast: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
 
             #[doc(hidden)]
             #[::pgrx::pgrx_macros::pg_extern(immutable,parallel_safe)]
-            pub fn #funcname_out #generics(input: #name #generics) -> &'static ::core::ffi::CStr {
+            pub fn #funcname_out #generics(input: #name #generics) -> ::pgrx::ffi::CString {
                 let mut buffer = ::pgrx::stringinfo::StringInfo::new();
                 ::pgrx::inoutfuncs::InOutFuncs::output(&input, &mut buffer);
                 // SAFETY: We just constructed this StringInfo ourselves
-                unsafe { buffer.leak_cstr() }
+                unsafe { buffer.leak_cstr().to_owned() }
             }
         });
     } else if args.contains(&PostgresTypeAttribute::PgVarlenaInOutFuncs) {
@@ -911,7 +913,7 @@ fn impl_postgres_type(ast: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
         stream.extend(quote! {
             #[doc(hidden)]
             #[::pgrx::pgrx_macros::pg_extern(immutable,parallel_safe)]
-            pub fn #funcname_in #generics(input: Option<&#lifetime ::core::ffi::CStr>) -> Option<::pgrx::datum::PgVarlena<#name #generics>> {
+            pub fn #funcname_in #generics(input: Option<&::core::ffi::CStr>) -> Option<::pgrx::datum::PgVarlena<#name #generics>> {
                 input.map_or_else(|| {
                     for m in <#name as ::pgrx::inoutfuncs::PgVarlenaInOutFuncs>::NULL_ERROR_MESSAGE {
                         ::pgrx::pg_sys::error!("{m}");
@@ -922,11 +924,11 @@ fn impl_postgres_type(ast: DeriveInput) -> syn::Result<proc_macro2::TokenStream>
 
             #[doc(hidden)]
             #[::pgrx::pgrx_macros::pg_extern(immutable,parallel_safe)]
-            pub fn #funcname_out #generics(input: ::pgrx::datum::PgVarlena<#name #generics>) -> &'static ::core::ffi::CStr {
+            pub fn #funcname_out #generics(input: ::pgrx::datum::PgVarlena<#name #generics>) -> ::pgrx::ffi::CString {
                 let mut buffer = ::pgrx::stringinfo::StringInfo::new();
                 ::pgrx::inoutfuncs::PgVarlenaInOutFuncs::output(&*input, &mut buffer);
                 // SAFETY: We just constructed this StringInfo ourselves
-                unsafe { buffer.leak_cstr() }
+                unsafe { buffer.leak_cstr().to_owned() }
             }
         });
     }

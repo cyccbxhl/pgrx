@@ -24,29 +24,27 @@ mod returning;
 mod search_path;
 
 pub use argument::PgExternArgument;
+pub(crate) use attribute::Attribute;
 pub use cast::PgCast;
 pub use operator::PgOperator;
 pub use returning::NameMacro;
+use syn::token::Comma;
 
+use self::returning::Returning;
+use super::UsedType;
+use crate::enrich::{CodeEnrichment, ToEntityGraphTokens, ToRustCodeTokens};
+use crate::finfo::{finfo_v1_extern_c, finfo_v1_tokens};
 use crate::fmt::ErrHarder;
 use crate::ToSqlConfig;
-pub(crate) use attribute::Attribute;
 use operator::{PgrxOperatorAttributeWithIdent, PgrxOperatorOpName};
 use search_path::SearchPathList;
 
-use crate::enrich::CodeEnrichment;
-use crate::enrich::ToEntityGraphTokens;
-use crate::enrich::ToRustCodeTokens;
 use proc_macro2::{Ident, Span, TokenStream as TokenStream2};
-use quote::{quote, quote_spanned, ToTokens};
+use quote::{format_ident, quote, quote_spanned};
 use syn::parse::{Parse, ParseStream, Parser};
 use syn::punctuated::Punctuated;
 use syn::spanned::Spanned;
-use syn::{Meta, Token};
-
-use self::returning::Returning;
-
-use super::UsedType;
+use syn::{Meta, Token, Type};
 
 /// A parsed `#[pg_extern]` item.
 ///
@@ -107,9 +105,11 @@ impl PgExtern {
 
         if let Some(ref mut content) = to_sql_config.content {
             let value = content.value();
+            // FIXME: find out if we should be using synthetic spans, issue #1667
+            let span = content.span();
             let updated_value =
                 value.replace("@FUNCTION_NAME@", &(func.sig.ident.to_string() + "_wrapper")) + "\n";
-            *content = syn::LitStr::new(&updated_value, Span::call_site());
+            *content = syn::LitStr::new(&updated_value, span);
         }
 
         if !to_sql_config.overrides_default() {
@@ -273,7 +273,8 @@ impl PgExtern {
                 f.path()
                     .segments
                     .first()
-                    .map(|f| f.ident == Ident::new("search_path", Span::call_site()))
+                    // FIXME: find out if we should be using synthetic spans, issue #1667
+                    .map(|f| f.ident == Ident::new("search_path", func.span()))
                     .unwrap_or_default()
             })
             .map(|attr| attr.parse_args::<SearchPathList>())
@@ -337,8 +338,7 @@ impl PgExtern {
             .collect::<Vec<_>>();
         let hrtb = if lifetimes.is_empty() { None } else { Some(quote! { for<#(#lifetimes),*> }) };
 
-        let sql_graph_entity_fn_name =
-            syn::Ident::new(&format!("__pgrx_internals_fn_{}", ident), Span::call_site());
+        let sql_graph_entity_fn_name = format_ident!("__pgrx_internals_fn_{}", ident);
         quote_spanned! { self.func.sig.span() =>
             #[no_mangle]
             #[doc(hidden)]
@@ -373,54 +373,31 @@ impl PgExtern {
         }
     }
 
-    fn finfo_tokens(&self) -> TokenStream2 {
-        let finfo_name = syn::Ident::new(
-            &format!("pg_finfo_{}_wrapper", self.func.sig.ident),
-            Span::call_site(),
-        );
-        quote_spanned! { self.func.sig.span() =>
-            #[no_mangle]
-            #[doc(hidden)]
-            pub extern "C" fn #finfo_name() -> &'static ::pgrx::pg_sys::Pg_finfo_record {
-                const V1_API: ::pgrx::pg_sys::Pg_finfo_record = ::pgrx::pg_sys::Pg_finfo_record { api_version: 1 };
-                &V1_API
-            }
-        }
-    }
-
-    pub fn wrapper_func(&self) -> TokenStream2 {
+    pub fn wrapper_func(&self) -> Result<syn::ItemFn, syn::Error> {
         let func_name = &self.func.sig.ident;
-        let func_name_wrapper = Ident::new(
-            &format!("{}_wrapper", &self.func.sig.ident.to_string()),
-            self.func.sig.ident.span(),
-        );
-        let func_generics = &self.func.sig.generics;
         let is_raw = self.extern_attrs().contains(&Attribute::Raw);
         // We use a `_` prefix to make functions with no args more satisfied during linting.
         let fcinfo_ident = syn::Ident::new("_fcinfo", self.func.sig.ident.span());
+        let lifetimes =
+            self.func.sig.generics.lifetimes().collect::<syn::punctuated::Punctuated<_, Comma>>();
+        let fc_lt = syn::Lifetime::new("'fcx", Span::mixed_site());
+        let fc_ltparam = syn::LifetimeParam::new(fc_lt.clone());
 
         let args = &self.inputs;
-        let arg_pats = args
-            .iter()
-            .map(|v| syn::Ident::new(&format!("{}_", &v.pat), self.func.sig.span()))
-            .collect::<Vec<_>>();
+        let arg_pats = args.iter().map(|v| format_ident!("{}_", &v.pat)).collect::<Vec<_>>();
         let arg_fetches = args.iter().enumerate().map(|(idx, arg)| {
             let pat = &arg_pats[idx];
             let resolved_ty = &arg.used_ty.resolved_ty;
-            if arg.used_ty.resolved_ty.to_token_stream().to_string() == quote!(pgrx::pg_sys::FunctionCallInfo).to_token_stream().to_string()
-                || arg.used_ty.resolved_ty.to_token_stream().to_string() == quote!(pg_sys::FunctionCallInfo).to_token_stream().to_string()
-                || arg.used_ty.resolved_ty.to_token_stream().to_string() == quote!(::pgrx::pg_sys::FunctionCallInfo).to_token_stream().to_string()
-            {
-                quote_spanned! {pat.span()=>
+            match resolved_ty {
+                // There's no danger of misinterpreting the type, as pointer coercions must typecheck!
+                Type::Path(ty_path) if ty_path.last_ident_is("FunctionCallInfo") => quote_spanned! { pat.span() =>
                     let #pat = #fcinfo_ident;
-                }
-            } else if arg.used_ty.resolved_ty.to_token_stream().to_string() == quote!(()).to_token_stream().to_string() {
-                quote_spanned! {pat.span()=>
+                },
+                Type::Tuple(tup) if tup.elems.is_empty() => quote_spanned! { pat.span() =>
                     debug_assert!(unsafe { ::pgrx::fcinfo::pg_getarg::<()>(#fcinfo_ident, #idx).is_none() }, "A `()` argument should always receive `NULL`");
                     let #pat = ();
-                }
-            } else {
-                match (is_raw, &arg.used_ty.optional) {
+                },
+                _ => match (is_raw, &arg.used_ty.optional) {
                     (true, None) | (true, Some(_)) => quote_spanned! { pat.span() =>
                         let #pat = unsafe { ::pgrx::fcinfo::pg_getarg_datum_raw(#fcinfo_ident, #idx) as #resolved_ty };
                     },
@@ -434,159 +411,74 @@ impl PgExtern {
             }
         });
 
-        // Iterators require fancy handling for their retvals
-        let emit_result_handler = |span: Span, optional: bool, result: bool| {
-            let mut ret_expr = quote! { #func_name(#(#arg_pats),*) };
-            if result {
-                // If it's a result, we need to report it.
-                ret_expr = quote! { #ret_expr.unwrap_or_report() };
-            }
-            if !optional {
-                // If it's not already an option, we need to wrap it.
-                ret_expr = quote! { Some(#ret_expr) };
-            }
-            let import = result.then(|| quote! { use ::pgrx::pg_sys::panic::ErrorReportable; });
-            quote_spanned! { span =>
-                    #import
-                    #ret_expr
-            }
-        };
-
-        // This is the generic wrapper fn that everything needs
-        let extern_c_wrapper =
-            |span, returns_datum: bool, wrapped_contents: proc_macro2::TokenStream| {
-                let return_ty = returns_datum.then(|| quote! { -> ::pgrx::pg_sys::Datum });
-                quote_spanned! { span=>
-                    #[no_mangle]
-                    #[doc(hidden)]
-                    #[::pgrx::pgrx_macros::pg_guard]
-                    pub unsafe extern "C" fn #func_name_wrapper #func_generics(#fcinfo_ident: ::pgrx::pg_sys::FunctionCallInfo) #return_ty {
-                        #wrapped_contents
-                    }
-                }
-            };
-
         match &self.returns {
-            Returning::None => {
-                let fn_contents = quote! {
-                    #(#arg_fetches)*
-                    #[allow(unused_unsafe)]
-                    unsafe { #func_name(#(#arg_pats),*) }
+            Returning::None
+            | Returning::Type(_)
+            | Returning::SetOf { .. }
+            | Returning::Iterated { .. } => {
+                let ret_ty = match &self.func.sig.output {
+                    syn::ReturnType::Default => syn::parse_quote! { () },
+                    syn::ReturnType::Type(_, ret_ty) => ret_ty.clone(),
                 };
-                extern_c_wrapper(self.func.sig.span(), false, fn_contents)
-            }
-            Returning::Type(retval_ty) => {
-                let result_ident = syn::Ident::new("result", self.func.sig.span());
-                let retval_transform = if retval_ty.resolved_ty == syn::parse_quote!(()) {
-                    quote_spanned! { self.func.sig.output.span() =>
-                       unsafe { ::pgrx::fcinfo::pg_return_void() }
-                    }
-                } else if retval_ty.result {
-                    if retval_ty.optional.is_some() {
-                        // returning `Result<Option<T>>`
-                        quote_spanned! {
-                            self.func.sig.output.span() =>
-                                match ::pgrx::datum::IntoDatum::into_datum(#result_ident) {
-                                    Some(datum) => datum,
-                                    None => unsafe { ::pgrx::fcinfo::pg_return_null(#fcinfo_ident) },
-                                }
-                        }
-                    } else {
-                        // returning Result<T>
-                        quote_spanned! {
-                            self.func.sig.output.span() =>
-                                ::pgrx::datum::IntoDatum::into_datum(#result_ident).unwrap_or_else(|| panic!("returned Datum was NULL"))
-                        }
-                    }
-                } else if retval_ty.resolved_ty == syn::parse_quote!(pg_sys::Datum)
-                    || retval_ty.resolved_ty == syn::parse_quote!(pgrx::pg_sys::Datum)
-                    || retval_ty.resolved_ty == syn::parse_quote!(::pgrx::pg_sys::Datum)
-                {
-                    quote_spanned! { self.func.sig.output.span() =>
-                       #result_ident
-                    }
-                } else if retval_ty.optional.is_some() {
-                    quote_spanned! { self.func.sig.output.span() =>
-                        match #result_ident {
-                            Some(result) => {
-                                ::pgrx::datum::IntoDatum::into_datum(result).unwrap_or_else(|| panic!("returned Option<T> was NULL"))
-                            },
-                            None => unsafe { ::pgrx::fcinfo::pg_return_null(#fcinfo_ident) }
-                        }
-                    }
-                } else {
-                    quote_spanned! { self.func.sig.output.span() =>
-                        ::pgrx::datum::IntoDatum::into_datum(#result_ident).unwrap_or_else(|| panic!("returned Datum was NULL"))
-                    }
-                };
-
-                let fn_contents = quote! {
-                    #(#arg_fetches)*
-
-                    #[allow(unused_unsafe)] // unwrapped fn might be unsafe
-                    let #result_ident = unsafe { #func_name(#(#arg_pats),*) };
-
-                    #retval_transform
-                };
-                extern_c_wrapper(self.func.sig.span(), true, fn_contents)
-            }
-            Returning::SetOf { ty: _retval_ty, optional, result } => {
-                let result_handler = emit_result_handler(self.func.sig.span(), *optional, *result);
-                let setof_closure = quote! {
+                let wrapper_code = quote_spanned! { self.func.block.span() =>
+                    fn _internal_wrapper<#fc_ltparam, #lifetimes>(fcinfo: ::pgrx::callconv::Fcinfo<#fc_lt>) -> ::pgrx::datum::Datum<#fc_lt> {
                     #[allow(unused_unsafe)]
                     unsafe {
-                        // SAFETY: the caller has asserted that `fcinfo` is a valid FunctionCallInfo pointer, allocated by Postgres
-                        // with all its fields properly setup.  Unless the user is calling this wrapper function directly, this
-                        // will always be the case
-                        ::pgrx::iter::SetOfIterator::srf_next(#fcinfo_ident, || {
-                            #( #arg_fetches )*
-                            #result_handler
-                        })
-                    }
+                        let #fcinfo_ident = fcinfo.0;
+                        let result = match <#ret_ty as ::pgrx::callconv::RetAbi>::check_fcinfo_and_prepare(#fcinfo_ident) {
+                            ::pgrx::callconv::CallCx::WrappedFn(mcx) => {
+                                let mut mcx = ::pgrx::PgMemoryContexts::For(mcx);
+                                ::pgrx::callconv::RetAbi::to_ret(mcx.switch_to(|_| {
+                                    #(#arg_fetches)*
+                                    #func_name( #(#arg_pats),* )
+                                }))
+                            }
+                            ::pgrx::callconv::CallCx::RestoreCx => <#ret_ty as ::pgrx::callconv::RetAbi>::ret_from_fcinfo_fcx(#fcinfo_ident),
+                        };
+                        ::core::mem::transmute(unsafe { <#ret_ty as ::pgrx::callconv::RetAbi>::box_ret_in_fcinfo(#fcinfo_ident, result) })
+                    }}
+                    let fcinfo = ::pgrx::callconv::Fcinfo(#fcinfo_ident, ::core::marker::PhantomData);
+                    // We preserve the invariants
+                    let datum = unsafe { ::pgrx::pg_sys::submodules::panic::pgrx_extern_c_guard(move || _internal_wrapper(fcinfo)) };
+                    datum.sans_lifetime()
                 };
-                extern_c_wrapper(self.func.sig.span(), true, setof_closure)
-            }
-            Returning::Iterated { tys: retval_tys, optional, result } => {
-                let result_handler = emit_result_handler(self.func.sig.span(), *optional, *result);
-
-                let iter_closure = if retval_tys.len() == 1 {
-                    // Postgres considers functions returning a 1-field table (`RETURNS TABLE (T)`) to be
-                    // a function that `RETURNS SETOF T`.  So we write a different wrapper implementation
-                    // that transparently transforms the `TableIterator` returned by the user into a `SetOfIterator`
-                    quote! {
-                        #[allow(unused_unsafe)]
-                        unsafe {
-                            // SAFETY: the caller has asserted that `fcinfo` is a valid FunctionCallInfo pointer, allocated by Postgres
-                            // with all its fields properly setup.  Unless the user is calling this wrapper function directly, this
-                            // will always be the case
-                            ::pgrx::iter::SetOfIterator::srf_next(#fcinfo_ident, || {
-                                #( #arg_fetches )*
-                                let table_iterator = { #result_handler };
-
-                                // we need to convert the 1-field `TableIterator` provided by the user
-                                // into a SetOfIterator in order to properly handle the case of `RETURNS TABLE (T)`,
-                                // which is a table that returns only 1 field.
-                                table_iterator.map(|i| ::pgrx::iter::SetOfIterator::new(i.into_iter().map(|(v,)| v)))
-                            })
-                        }
-                    }
-                } else {
-                    quote! {
-                        #[allow(unused_unsafe)]
-                        unsafe {
-                            // SAFETY: the caller has asserted that `fcinfo` is a valid FunctionCallInfo pointer, allocated by Postgres
-                            // with all its fields properly setup.  Unless the user is calling this wrapper function directly, this
-                            // will always be the case
-                            ::pgrx::iter::TableIterator::srf_next(#fcinfo_ident, || {
-                                #( #arg_fetches )*
-                                #result_handler
-                            })
-                        }
-                    }
-                };
-                extern_c_wrapper(self.func.sig.span(), true, iter_closure)
+                finfo_v1_extern_c(&self.func, fcinfo_ident, wrapper_code)
             }
         }
+    }
+}
+
+trait LastIdent {
+    fn filter_last_ident(&self, id: &str) -> Option<&syn::PathSegment>;
+    #[inline]
+    fn last_ident_is(&self, id: &str) -> bool {
+        self.filter_last_ident(id).is_some()
+    }
+}
+
+impl LastIdent for syn::Type {
+    #[inline]
+    fn filter_last_ident(&self, id: &str) -> Option<&syn::PathSegment> {
+        let syn::Type::Path(syn::TypePath { path, .. }) = self else { return None };
+        path.filter_last_ident(id)
+    }
+}
+impl LastIdent for syn::TypePath {
+    #[inline]
+    fn filter_last_ident(&self, id: &str) -> Option<&syn::PathSegment> {
+        self.path.filter_last_ident(id)
+    }
+}
+impl LastIdent for syn::Path {
+    #[inline]
+    fn filter_last_ident(&self, id: &str) -> Option<&syn::PathSegment> {
+        self.segments.filter_last_ident(id)
+    }
+}
+impl<P> LastIdent for Punctuated<syn::PathSegment, P> {
+    #[inline]
+    fn filter_last_ident(&self, id: &str) -> Option<&syn::PathSegment> {
+        self.last().filter(|segment| segment.ident == id)
     }
 }
 
@@ -599,8 +491,8 @@ impl ToEntityGraphTokens for PgExtern {
 impl ToRustCodeTokens for PgExtern {
     fn to_rust_code_tokens(&self) -> TokenStream2 {
         let original_func = &self.func;
-        let wrapper_func = self.wrapper_func();
-        let finfo_tokens = self.finfo_tokens();
+        let wrapper_func = self.wrapper_func().unwrap();
+        let finfo_tokens = finfo_v1_tokens(wrapper_func.sig.ident.clone()).unwrap();
 
         quote_spanned! { self.func.sig.span() =>
             #original_func

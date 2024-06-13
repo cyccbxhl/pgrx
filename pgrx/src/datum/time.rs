@@ -24,17 +24,8 @@ use std::num::TryFromIntError;
 #[repr(transparent)]
 pub struct Time(pg_sys::TimeADT);
 
-/// Create a [`Time`] from a [`pg_sys::TimeADT`]
-///
-/// Note that [`pg_sys::TimeADT`] is just an `i64` as a number of microseconds.
-/// This impl currently allows creating a `Time` that cannot be constructed by SQL,
-/// such as at the time 37:42, which may yield logic bugs if used.
-impl From<pg_sys::TimeADT> for Time {
-    #[inline]
-    fn from(value: pg_sys::TimeADT) -> Self {
-        Time(value)
-    }
-}
+// 86_400_000_000
+const MICROSECONDS_PER_DAY: pg_sys::TimeADT = 24 * 60 * 60 * 1000 /* milli */ * 1000 /* micro */;
 
 impl From<Time> for pg_sys::TimeADT {
     #[inline]
@@ -68,6 +59,23 @@ impl From<TimeWithTimeZone> for Time {
     }
 }
 
+/// [`pg_sys::TimeADT`] (i64) to Time conversion
+///
+/// It is incorrect to convert a raw i64 to Time, due to out-of-bounds values
+/// resulting in severe logic errors, including database crashes, if used.
+impl TryFrom<pg_sys::TimeADT> for Time {
+    type Error = pg_sys::TimeADT;
+
+    #[inline]
+    fn try_from(raw: pg_sys::TimeADT) -> Result<Self, Self::Error> {
+        const MORE_THAN_A_DAY: i64 = MICROSECONDS_PER_DAY + 1;
+        match raw {
+            0..=MICROSECONDS_PER_DAY => Ok(Time(raw)),
+            i64::MIN..=-1 | MORE_THAN_A_DAY.. => Err(raw),
+        }
+    }
+}
+
 impl TryFrom<pg_sys::Datum> for Time {
     type Error = TryFromIntError;
 
@@ -88,7 +96,7 @@ impl FromDatum for Time {
         if is_null {
             None
         } else {
-            Some(datum.try_into().expect("Error converting time datum"))
+            Some(Time::modular_from_raw(datum.value() as i64))
         }
     }
 }
@@ -151,6 +159,10 @@ impl Time {
             )
             .unwrap()
         }
+    }
+
+    pub fn modular_from_raw(time: i64) -> Self {
+        Self(time.rem_euclid(MICROSECONDS_PER_DAY))
     }
 
     /// Return the `hour`

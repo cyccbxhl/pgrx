@@ -9,8 +9,7 @@
 //LICENSE Use of this source code is governed by the MIT license that can be found in the LICENSE file.
 extern crate proc_macro;
 
-use proc_macro2::Ident;
-use quote::{quote, quote_spanned};
+use quote::{format_ident, quote, quote_spanned};
 use std::ops::Deref;
 use std::str::FromStr;
 use syn::punctuated::Punctuated;
@@ -58,7 +57,15 @@ pub fn item_fn_without_rewrite(mut func: ItemFn) -> syn::Result<proc_macro2::Tok
     // nor do we need a visibility beyond "private"
     func.vis = Visibility::Inherited;
 
-    func.sig.ident = Ident::new(&format!("{}_inner", func.sig.ident), func.sig.ident.span());
+    func.sig.ident = format_ident!("{}_inner", func.sig.ident);
+
+    // the wrapper_inner function declaration may contain lifetimes that are not used, since our input type is `FunctionCallInfo` mainly and return type is `Datum`
+    let unused_lifetimes = match generics.lifetimes().next() {
+        Some(_) => quote! {
+            #[allow(unused_lifetimes, clippy::extra_unused_lifetimes)]
+        },
+        None => quote! {},
+    };
 
     let arg_list = build_arg_list(&sig, false)?;
     let func_name = func.sig.ident.clone();
@@ -97,6 +104,7 @@ pub fn item_fn_without_rewrite(mut func: ItemFn) -> syn::Result<proc_macro2::Tok
         #(#attrs)*
         #vis #sig {
             #[allow(non_snake_case)]
+            #unused_lifetimes
             #func
 
             #[allow(unused_unsafe)]
@@ -128,6 +136,7 @@ fn foreign_item_fn(func: &ForeignItemFn, abi: &syn::Abi) -> syn::Result<proc_mac
     let return_type = func.sig.output.clone();
 
     Ok(quote! {
+        #[inline]
         #[track_caller]
         pub unsafe fn #func_name ( #arg_list_with_types ) #return_type {
             crate::ffi::pg_guard_ffi_boundary(move || {
@@ -147,7 +156,7 @@ fn build_arg_list(sig: &Signature, suffix_arg_name: bool) -> syn::Result<proc_ma
             FnArg::Typed(ty) => {
                 if let Pat::Ident(ident) = ty.pat.deref() {
                     if suffix_arg_name && ident.ident.to_string() != "fcinfo" {
-                        let ident = Ident::new(&format!("{}_", ident.ident), ident.span());
+                        let ident = format_ident!("{}_", ident.ident);
                         arg_list.extend(quote! { #ident, });
                     } else {
                         arg_list.extend(quote! { #ident, });
@@ -179,7 +188,7 @@ fn rename_arg_list(sig: &Signature) -> syn::Result<proc_macro2::TokenStream> {
             FnArg::Typed(ty) => {
                 if let Pat::Ident(ident) = ty.pat.deref() {
                     // prefix argument name with "arg_""
-                    let name = Ident::new(&format!("arg_{}", ident.ident), ident.ident.span());
+                    let name = format_ident!("arg_{}", ident.ident);
                     arg_list.extend(quote! { #name, });
                 } else {
                     return Err(syn::Error::new(

@@ -28,11 +28,13 @@ pgrx-pg-config.workspace = true
 pgrx-sql-entity-graph.workspace = true
 
 cargo_metadata.workspace = true
+cargo-edit.workspace = true
 cargo_toml.workspace = true
 clap-cargo.workspace = true
 libc.workspace = true
 regex.workspace = true
 toml.workspace = true
+toml_edit.workspace = true
 
 clap = { version = "4.4.2", features = [ "env", "suggestions", "cargo", "derive", "wrap_help" ] }
 jobslot = "0.2.12" # as seen in gmake -j{N}
@@ -55,7 +57,7 @@ tracing-subscriber = { version = "0.3.17", features = [ "env-filter" ] }
 # for downloading/unpacking things from the Postgres file servers
 bzip2 = "0.4.4"
 env_proxy = "0.4.1"
-serde = { version = "1.0", features = [ "derive" ] }
+serde.workspace = true
 serde-xml-rs = "0.6.0"
 tar = "0.4.40"
 ureq = { version = "2.8.0", default-features = false, features = [ "gzip" ] }

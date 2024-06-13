@@ -16,6 +16,7 @@ to the `pgrx` framework and very subject to change between versions. While you m
 
 */
 #![allow(clippy::too_many_arguments)]
+#![allow(clippy::redundant_pattern_matching)]
 pub use aggregate::entity::{AggregateTypeEntity, PgAggregateEntity};
 pub use aggregate::{
     AggregateType, AggregateTypeList, FinalizeModify, ParallelOption, PgAggregate,
@@ -56,6 +57,7 @@ pub(crate) mod control_file;
 pub(crate) mod enrich;
 pub(crate) mod extension_sql;
 pub(crate) mod extern_args;
+pub(crate) mod finfo;
 #[macro_use]
 pub(crate) mod fmt;
 pub mod lifetimes;
@@ -125,6 +127,32 @@ impl SqlGraphEntity {
             rust_identifier = self.rust_identifier(),
         )
     }
+
+    pub fn id_or_name_matches(&self, ty_id: &::core::any::TypeId, name: &str) -> bool {
+        match self {
+            SqlGraphEntity::Enum(entity) => entity.id_matches(ty_id),
+            SqlGraphEntity::Type(entity) => entity.id_matches(ty_id),
+            SqlGraphEntity::BuiltinType(string) => string == name,
+            _ => false,
+        }
+    }
+
+    pub fn type_matches(&self, arg: &dyn TypeIdentifiable) -> bool {
+        self.id_or_name_matches(arg.ty_id(), arg.ty_name())
+    }
+}
+
+pub trait TypeMatch {
+    fn id_matches(&self, arg: &core::any::TypeId) -> bool;
+}
+
+pub fn type_keyed<'a, 'b, A: TypeMatch, B>((a, b): (&'a A, &'b B)) -> (&'a dyn TypeMatch, &'b B) {
+    (a, b)
+}
+
+pub trait TypeIdentifiable {
+    fn ty_id(&self) -> &core::any::TypeId;
+    fn ty_name(&self) -> &str;
 }
 
 impl SqlGraphIdentifier for SqlGraphEntity {

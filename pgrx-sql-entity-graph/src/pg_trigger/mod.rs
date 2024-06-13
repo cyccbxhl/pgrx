@@ -19,11 +19,12 @@ pub mod attribute;
 pub mod entity;
 
 use crate::enrich::{ToEntityGraphTokens, ToRustCodeTokens};
+use crate::finfo::{finfo_v1_extern_c, finfo_v1_tokens};
 use crate::{CodeEnrichment, ToSqlConfig};
 use attribute::PgTriggerAttribute;
-use proc_macro2::{Span, TokenStream as TokenStream2};
-use quote::quote;
-use syn::{ItemFn, Token};
+use proc_macro2::{Ident, TokenStream as TokenStream2};
+use quote::{format_ident, quote};
+use syn::{spanned::Spanned, ItemFn, Token};
 
 #[derive(Debug, Clone)]
 pub struct PgTrigger {
@@ -37,8 +38,9 @@ impl PgTrigger {
         attributes: syn::punctuated::Punctuated<PgTriggerAttribute, Token![,]>,
     ) -> Result<CodeEnrichment<Self>, syn::Error> {
         if attributes.len() > 1 {
+            // FIXME: add a UI test for this
             return Err(syn::Error::new(
-                Span::call_site(),
+                func.span(),
                 "Multiple `sql` arguments found, it must be unique",
             ));
         };
@@ -48,10 +50,12 @@ impl PgTrigger {
             .map(|PgTriggerAttribute::Sql(mut config)| {
                 if let Some(ref mut content) = config.content {
                     let value = content.value();
+                    // FIXME: find out if we should be using synthetic spans, issue #1667
+                    let span = content.span();
                     let updated_value = value
                         .replace("@FUNCTION_NAME@", &(func.sig.ident.to_string() + "_wrapper"))
                         + "\n";
-                    *content = syn::LitStr::new(&updated_value, Span::call_site());
+                    *content = syn::LitStr::new(&updated_value, span);
                 };
                 config
             })
@@ -65,15 +69,11 @@ impl PgTrigger {
     }
 
     pub fn wrapper_tokens(&self) -> Result<ItemFn, syn::Error> {
-        let function_ident = &self.func.sig.ident;
-        let extern_func_ident = syn::Ident::new(
-            &format!("{}_wrapper", self.func.sig.ident),
-            self.func.sig.ident.span(),
-        );
+        let function_ident = self.func.sig.ident.clone();
+        let fcinfo_ident = Ident::new("_fcinfo", function_ident.span());
+
         let tokens = quote! {
-            #[no_mangle]
-            #[::pgrx::pgrx_macros::pg_guard]
-            unsafe extern "C" fn #extern_func_ident(fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> ::pgrx::pg_sys::Datum {
+            fn _internal(fcinfo: ::pgrx::pg_sys::FunctionCallInfo) -> ::pgrx::pg_sys::Datum {
                 let fcinfo_ref = unsafe {
                     // SAFETY:  The caller should be Postgres in this case and it will give us a valid "fcinfo" pointer
                     fcinfo.as_ref().expect("fcinfo was NULL from Postgres")
@@ -97,42 +97,24 @@ impl PgTrigger {
                     }
                 }
             }
-
+            ::pgrx::pg_sys::submodules::panic::pgrx_extern_c_guard(move || _internal(#fcinfo_ident))
         };
-        syn::parse2(tokens)
-    }
 
-    pub fn finfo_tokens(&self) -> Result<ItemFn, syn::Error> {
-        let finfo_name = syn::Ident::new(
-            &format!("pg_finfo_{}_wrapper", self.func.sig.ident),
-            proc_macro2::Span::call_site(),
-        );
-        let tokens = quote! {
-            #[no_mangle]
-            #[doc(hidden)]
-            pub extern "C" fn #finfo_name() -> &'static ::pgrx::pg_sys::Pg_finfo_record {
-                const V1_API: ::pgrx::pg_sys::Pg_finfo_record = ::pgrx::pg_sys::Pg_finfo_record { api_version: 1 };
-                &V1_API
-            }
-        };
-        syn::parse2(tokens)
+        finfo_v1_extern_c(&self.func, fcinfo_ident, tokens)
     }
 }
 
 impl ToEntityGraphTokens for PgTrigger {
     fn to_entity_graph_tokens(&self) -> TokenStream2 {
-        let sql_graph_entity_fn_name = syn::Ident::new(
-            &format!("__pgrx_internals_trigger_{}", self.func.sig.ident),
-            self.func.sig.ident.span(),
-        );
         let func_sig_ident = &self.func.sig.ident;
+        let sql_graph_entity_fn_name = format_ident!("__pgrx_internals_trigger_{}", func_sig_ident);
         let function_name = func_sig_ident.to_string();
         let to_sql_config = &self.to_sql_config;
 
         quote! {
             #[no_mangle]
             #[doc(hidden)]
-            #[allow(unknown_lints, clippy::no_mangle_with_rust_abi)]
+            #[allow(unknown_lints, clippy::no_mangle_with_rust_abi, nonstandard_style)]
             pub extern "Rust" fn #sql_graph_entity_fn_name() -> ::pgrx::pgrx_sql_entity_graph::SqlGraphEntity {
                 use core::any::TypeId;
                 extern crate alloc;
@@ -154,8 +136,8 @@ impl ToEntityGraphTokens for PgTrigger {
 
 impl ToRustCodeTokens for PgTrigger {
     fn to_rust_code_tokens(&self) -> TokenStream2 {
-        let wrapper_func = self.wrapper_tokens().expect("Generating wrappper function for trigger");
-        let finfo_func = self.finfo_tokens().expect("Generating finfo function for trigger");
+        let wrapper_func = self.wrapper_tokens().expect("Generating wrapper function for trigger");
+        let finfo_func = finfo_v1_tokens(wrapper_func.sig.ident.clone()).unwrap();
         let func = &self.func;
 
         quote! {
