@@ -178,8 +178,18 @@ impl<'a> PgHeapTuple<'a, AllocatedByPostgres> {
 
     /// Consumes a `[PgHeapTuple]` considered to be allocated by Postgres and transforms it into one
     /// that is considered allocated by Rust.  This is accomplished by copying the underlying [pg_sys::HeapTupleData].
+    #[cfg(not(feature = "gp7"))]
     pub fn into_owned(self) -> PgHeapTuple<'a, AllocatedByRust> {
         let copy = unsafe { pg_sys::heap_copytuple(self.tuple.into_pg()) };
+        PgHeapTuple {
+            tuple: unsafe { PgBox::<pg_sys::HeapTupleData, AllocatedByRust>::from_rust(copy) },
+            tupdesc: self.tupdesc,
+        }
+    }
+
+    #[cfg(feature = "gp7")]
+    pub fn into_owned(self) -> PgHeapTuple<'a, AllocatedByRust> {
+        let copy = unsafe { pg_sys::heaptuple_copy_to(self.tuple.into_pg(), std::ptr::null_mut(), std::ptr::null_mut()) };
         PgHeapTuple {
             tuple: unsafe { PgBox::<pg_sys::HeapTupleData, AllocatedByRust>::from_rust(copy) },
             tupdesc: self.tupdesc,
@@ -233,8 +243,13 @@ impl<'a> PgHeapTuple<'a, AllocatedByRust> {
                     as *mut pg_sys::Datum;
                 let mut is_null = vec![true; natts];
 
+                #[cfg(not(feature = "gp7"))]
                 let heap_tuple =
                     pg_sys::heap_form_tuple(tuple_desc.as_ptr(), datums, is_null.as_mut_ptr());
+
+                #[cfg(feature = "gp7")]
+                let heap_tuple =
+                    pg_sys::heaptuple_form_to(tuple_desc.as_ptr(), datums, is_null.as_mut_ptr(), std::ptr::null_mut(), std::ptr::null_mut());
 
                 Ok(PgHeapTuple {
                     tuple: PgBox::<pg_sys::HeapTupleData, AllocatedByRust>::from_rust(heap_tuple),
@@ -277,8 +292,13 @@ impl<'a> PgHeapTuple<'a, AllocatedByRust> {
         }
 
         unsafe {
-            let formed_tuple =
+            #[cfg(not(feature = "gp7"))]
+                let formed_tuple =
                 pg_sys::heap_form_tuple(tupdesc.as_ptr(), datums.as_mut_ptr(), nulls.as_mut_ptr());
+
+            #[cfg(feature = "gp7")]
+            let formed_tuple =
+                pg_sys::heaptuple_form_to(tupdesc.as_ptr(), datums.as_mut_ptr(), nulls.as_mut_ptr(), std::ptr::null_mut(), std::ptr::null_mut());
 
             Ok(Self {
                 tuple: PgBox::<pg_sys::HeapTupleData, AllocatedByRust>::from_rust(formed_tuple),

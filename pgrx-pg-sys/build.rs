@@ -12,9 +12,11 @@ use eyre::{eyre, WrapErr};
 use once_cell::sync::Lazy;
 use pgrx_pg_config::{
     is_supported_major_version, prefix_path, PgConfig, PgConfigSelector, Pgrx, SUPPORTED_VERSIONS,
+    GREENPLUM_VERSION_BASE, pg_major_to_label
 };
 use quote::{quote, ToTokens};
 use std::cmp::Ordering;
+use std::cmp::Ordering::Greater;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{self, PathBuf}; // disambiguate path::Path and syn::Type::Path
@@ -144,26 +146,32 @@ fn main() -> eyre::Result<()> {
         for pgver in SUPPORTED_VERSIONS() {
             if let Some(_) = env_tracked(&format!("CARGO_FEATURE_PG{}", pgver.major)) {
                 found.push(pgver);
+            } else if env_tracked(&format!("CARGO_FEATURE_GP{}", pgver.major / GREENPLUM_VERSION_BASE)).is_some() {
+                found.push(pgver);
             }
         }
         let found_ver = match &found[..] {
             [ver] => ver,
             [] => {
                 return Err(eyre!(
-                    "Did not find `pg$VERSION` feature. `pgrx-pg-sys` requires one of {} to be set",
+                    "Did not find `pg$VERSION` or `gp$VERSION` feature. `pgrx-pg-sys` requires one of {} to be set",
                     SUPPORTED_VERSIONS()
                         .iter()
-                        .map(|pgver| format!("`pg{}`", pgver.major))
+                        .map(|version| {
+                            pg_major_to_label(version.major)
+                        })
                         .collect::<Vec<_>>()
                         .join(", ")
                 ))
             }
             versions => {
                 return Err(eyre!(
-                    "Multiple `pg$VERSION` features found.\n`--no-default-features` may be required.\nFound: {}",
+                    "Multiple `pg$VERSION` or `gp$VERSION` features found.\n`--no-default-features` may be required.\nFound: {}",
                     versions
                         .into_iter()
-                        .map(|version| format!("pg{}", version.major))
+                        .map(|version| {
+                            pg_major_to_label(version.major)
+                        })
                         .collect::<Vec<String>>()
                         .join(", ")
                 ))
@@ -174,16 +182,16 @@ fn main() -> eyre::Result<()> {
             let major_version = pg_config.major_version()?;
 
             if major_version != found_major {
-                panic!("Feature flag `pg{found_major}` does not match version from the environment-described PgConfig (`{major_version}`)")
+                panic!("Feature flag `pg{found_major}` or `gp{found_major}` does not match version from the environment-described PgConfig (`{major_version}`)")
             }
             vec![(major_version, pg_config)]
         } else {
-            let specific = Pgrx::from_config()?.get(&format!("pg{}", found_ver.major))?;
+            let specific = Pgrx::from_config()?.get(&pg_major_to_label(found_ver.major))?;
             vec![(found_ver.major, specific)]
         }
     };
     std::thread::scope(|scope| {
-        // This is pretty much either always 1 (normally) or 5 (for releases),
+        // This is pretty much either always 1 (normally) or 6 (for releases),
         // but in the future if we ever have way more, we should consider
         // chunking `pg_configs` based on `thread::available_parallelism()`.
         let threads = pg_configs
@@ -253,7 +261,12 @@ fn generate_bindings(
 ) -> eyre::Result<()> {
     let mut include_h = build_paths.manifest_dir.clone();
     include_h.push("include");
-    include_h.push(format!("pg{}.h", major_version));
+    if major_version < GREENPLUM_VERSION_BASE {
+        include_h.push(format!("pg{major_version}.h"));
+    } else {
+        let gp_major = major_version / GREENPLUM_VERSION_BASE;
+        include_h.push(format!("gp{gp_major}.h"));
+    }
 
     let bindgen_output = get_bindings(major_version, &pg_config, &include_h)
         .wrap_err_with(|| format!("bindgen failed for pg{}", major_version))?;
@@ -270,13 +283,18 @@ fn generate_bindings(
     };
     for dest_dir in dest_dirs {
         let mut bindings_file = dest_dir.clone();
-        bindings_file.push(&format!("pg{}.rs", major_version));
+        if major_version < GREENPLUM_VERSION_BASE {
+            bindings_file.push(&format!("pg{major_version}.rs"));
+        } else {
+            let gp_major = major_version / GREENPLUM_VERSION_BASE;
+            bindings_file.push(&format!("gp{gp_major}.rs"));
+        }
         write_rs_file(
             rewritten_items.clone(),
             &bindings_file,
             quote! {
                 use crate as pg_sys;
-                #[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15", feature = "pg16"))]
+                #[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15", feature = "pg16", feature = "gp7"))]
                 use crate::NullableDatum;
                 use crate::{Datum, Oid, PgNode};
             },
@@ -290,7 +308,12 @@ fn generate_bindings(
         })?;
 
         let mut oids_file = dest_dir.clone();
-        oids_file.push(&format!("pg{}_oids.rs", major_version));
+        if major_version < GREENPLUM_VERSION_BASE {
+            oids_file.push(&format!("pg{major_version}_oids.rs"));
+        } else {
+            let gp_major = major_version / GREENPLUM_VERSION_BASE;
+            oids_file.push(&format!("gp{gp_major}_oids.rs"));
+        }
         write_rs_file(oids.clone(), &oids_file, quote! {}).wrap_err_with(|| {
             format!(
                 "Unable to write oids file for pg{} to `{}`",
@@ -691,6 +714,13 @@ fn get_bindings(
         let bindings_file = format!("{info_dir}/pg{major_version}_raw_bindings.rs");
         std::fs::read_to_string(&bindings_file)
             .wrap_err_with(|| format!("failed to read raw bindings from {bindings_file}"))?
+    } else if let Some(info_dir) =
+        target_env_tracked(&format!("PGRX_TARGET_INFO_PATH_GP{}", major_version / GREENPLUM_VERSION_BASE))
+    {
+        let gp_major = major_version / GREENPLUM_VERSION_BASE;
+        let bindings_file = format!("{}/gp{}_raw_bindings.rs", info_dir, gp_major);
+        std::fs::read_to_string(&bindings_file)
+            .wrap_err_with(|| format!("failed to read raw bindings from {}", bindings_file))?
     } else {
         let bindings = run_bindgen(major_version, pg_config, include_h)?;
         if let Some(path) = env_tracked("PGRX_PG_SYS_EXTRA_OUTPUT_PATH") {
@@ -708,7 +738,13 @@ fn run_bindgen(
     pg_config: &PgConfig,
     include_h: &PathBuf,
 ) -> eyre::Result<String> {
-    eprintln!("Generating bindings for pg{major_version}");
+    if major_version < GREENPLUM_VERSION_BASE {
+        eprintln!("Generating bindings for pg{major_version}");
+    } else {
+        let gp_major = major_version / GREENPLUM_VERSION_BASE;
+        eprintln!("Generating bindings for gp{gp_major}");
+    }
+
     let configure = pg_config.configure()?;
     let preferred_clang: Option<&std::path::Path> = configure.get("CLANG").map(|s| s.as_ref());
     eprintln!("pg_config --configure CLANG = {:?}", preferred_clang);
@@ -733,7 +769,9 @@ fn run_bindgen(
         .formatter(bindgen::Formatter::None)
         .layout_tests(false)
         .generate()
-        .wrap_err_with(|| format!("Unable to generate bindings for pg{}", major_version))?;
+        .wrap_err_with(|| {
+            format!("Unable to generate bindings for {}", pg_major_to_label(major_version))
+        })?;
 
     Ok(bindings.to_string())
 }
@@ -815,8 +853,13 @@ fn target_env_tracked(s: &str) -> Option<String> {
 /// Returns `Err` if `pg_config` errored, `None` if we should
 fn pg_target_include_flags(pg_version: u16, pg_config: &PgConfig) -> eyre::Result<Option<String>> {
     let var = "PGRX_INCLUDEDIR_SERVER";
-    let value =
-        target_env_tracked(&format!("{var}_PG{pg_version}")).or_else(|| target_env_tracked(var));
+    let value = if pg_version < GREENPLUM_VERSION_BASE {
+        target_env_tracked(&format!("{var}_PG{pg_version}")).or_else(|| target_env_tracked(var))
+    } else {
+        let gp_major = pg_version / GREENPLUM_VERSION_BASE;
+        target_env_tracked(&format!("{var}_GP{gp_major}")).or_else(|| target_env_tracked(var))
+    };
+
     match value {
         // No configured value: ask `pg_config`.
         None => Ok(Some(format!("-I{}", pg_config.includedir_server()?.display()))),

@@ -16,7 +16,7 @@ use cargo_toml::Manifest;
 use eyre::{eyre, WrapErr};
 use once_cell::sync::Lazy;
 use owo_colors::OwoColorize;
-use pgrx_pg_config::{cargo::PgrxManifestExt, get_target_dir, PgConfig, Pgrx};
+use pgrx_pg_config::{cargo::PgrxManifestExt, get_target_dir, PgConfig, Pgrx, pg_major_to_label};
 use std::collections::HashMap;
 use std::fs;
 use std::io::BufReader;
@@ -82,7 +82,7 @@ impl CommandExecute for Install {
             None => PgConfig::from_path(),
             Some(config) => PgConfig::new_with_defaults(PathBuf::from(config)),
         };
-        let pg_version = format!("pg{}", pg_config.major_version()?);
+        let pg_version = pg_major_to_label(pg_config.major_version()?);
         let profile = CargoProfile::from_flags(
             self.profile.as_deref(),
             self.release.then_some(CargoProfile::Release).unwrap_or(CargoProfile::Dev),

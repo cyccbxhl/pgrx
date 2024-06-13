@@ -208,7 +208,8 @@ mod pg_11 {
     feature = "pg13",
     feature = "pg14",
     feature = "pg15",
-    feature = "pg16"
+    feature = "pg16",
+    feature = "gp7"
 ))]
 mod pg_12_13_14_15 {
     use crate::{pg_sys, FromDatum};
@@ -353,7 +354,8 @@ pub use pg_11::*;
     feature = "pg13",
     feature = "pg14",
     feature = "pg15",
-    feature = "pg16"
+    feature = "pg16",
+    feature = "gp7"
 ))]
 pub use pg_12_13_14_15::*;
 

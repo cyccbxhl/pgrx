@@ -118,7 +118,8 @@ unsafe fn extract_enum_oid(tup: *mut pg_sys::HeapTupleData) -> pg_sys::Oid {
     feature = "pg13",
     feature = "pg14",
     feature = "pg15",
-    feature = "pg16"
+    feature = "pg16",
+    feature = "gp7"
 ))]
 unsafe fn extract_enum_oid(tup: *mut pg_sys::HeapTupleData) -> pg_sys::Oid {
     let en = {

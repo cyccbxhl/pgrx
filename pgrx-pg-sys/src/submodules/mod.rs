@@ -34,13 +34,15 @@ pub use datum::Datum;
     feature = "pg13",
     feature = "pg14",
     feature = "pg15",
-    feature = "pg16"
+    feature = "pg16",
+    feature = "gp7"
 ))]
 pub use datum::NullableDatum;
 
 pub use htup::*;
 pub use oids::*;
 pub use pg_try::*;
+#[cfg(any(feature = "pg12", feature = "gp7"))]
 pub use polyfill::*;
 pub use tupdesc::*;
 pub use utils::*;

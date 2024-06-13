@@ -207,7 +207,13 @@ seq!(I in 0..32 {
                         // SAFETY:  Caller has asserted that `tupdesc` is valid, and we just went
                         // through a little bit of effort to setup properly sized arrays for
                         // `datums` and `nulls`
-                        pg_sys::heap_form_tuple(tupdesc, datums.as_mut_ptr(), nulls.as_mut_ptr())
+                        #[cfg(not(feature = "gp7"))]
+                        let value = pg_sys::heap_form_tuple(tupdesc, datums.as_mut_ptr(), nulls.as_mut_ptr());
+
+                        #[cfg(feature = "gp7")]
+                        let value = pg_sys::heaptuple_form_to(tupdesc, datums.as_mut_ptr(), nulls.as_mut_ptr(), std::ptr::null_mut(), std::ptr::null_mut());
+
+                        value
                     }
                 }
             }

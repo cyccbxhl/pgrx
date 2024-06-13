@@ -431,7 +431,8 @@ pub fn interrupt_pending() -> bool {
         feature = "pg13",
         feature = "pg14",
         feature = "pg15",
-        feature = "pg16"
+        feature = "pg16",
+        feature = "gp7"
     ))]
     unsafe {
         crate::InterruptPending != 0
@@ -461,7 +462,13 @@ macro_rules! check_for_interrupts {
         #[allow(unused_unsafe)]
         unsafe {
             if $crate::InterruptPending != 0 {
+                #[cfg(not(feature = "gp7"))]
                 $crate::ProcessInterrupts();
+                #[cfg(feature = "gp7")]
+                {
+                    let file_cstr = std::ffi::CString::new(file!()).expect("Get __file__ failed");
+                    $crate::ProcessInterrupts(file_cstr.as_ptr(), line!() as i32);
+                }
             }
         }
     };
