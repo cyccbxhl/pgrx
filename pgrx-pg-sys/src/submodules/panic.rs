@@ -577,7 +577,7 @@ fn do_ereport(ereport: ErrorReportWithLevel) {
     /// to be freed in case level < ERROR
     #[inline(always)]
     #[rustfmt::skip]    // my opinion wins
-    #[cfg(feature = "pg12")]
+    #[cfg(any(feature = "pg12", feature = "gp7"))]
     fn do_ereport_impl(ereport: ErrorReportWithLevel) {
 
         extern "C" {

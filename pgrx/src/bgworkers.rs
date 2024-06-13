@@ -19,6 +19,7 @@ use std::os::raw::c_char;
 use std::ptr::null_mut;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
+use bitflags::Flags;
 
 pub static mut PREV_SHMEM_STARTUP_HOOK: Option<unsafe extern "C" fn()> = None;
 static GOT_SIGHUP: AtomicBool = AtomicBool::new(false);
@@ -52,7 +53,7 @@ bitflags! {
         const WL_POSTMASTER_DEATH  = pg_sys::WL_POSTMASTER_DEATH as i32;
         const WL_SOCKET_CONNECTED  = pg_sys::WL_SOCKET_WRITEABLE as i32;
         const WL_SOCKET_MASK       = (pg_sys::WL_SOCKET_READABLE | pg_sys::WL_SOCKET_WRITEABLE | pg_sys::WL_SOCKET_CONNECTED) as i32;
-        #[cfg(feature = "pg12")]
+        #[cfg(any(feature = "pg12", feature = "gp7"))]
         const WL_EXIT_ON_PM_DEATH  = pg_sys::WL_EXIT_ON_PM_DEATH  as i32;
 
     }
@@ -79,7 +80,8 @@ impl BackgroundWorker {
             feature = "pg13",
             feature = "pg14",
             feature = "pg15",
-            feature = "pg16"
+            feature = "pg16",
+            feature = "gp7",
         ))]
         const LEN: usize = 96;
 
@@ -198,7 +200,8 @@ impl BackgroundWorker {
                 feature = "pg13",
                 feature = "pg14",
                 feature = "pg15",
-                feature = "pg16"
+                feature = "pg16",
+                feature = "gp7",
             ))]
             pg_sys::BackgroundWorkerInitializeConnection(db, user, 0);
         };
@@ -642,6 +645,24 @@ impl<'a> From<&'a BackgroundWorkerBuilder> for pg_sys::BackgroundWorker {
             bgw_notify_pid: builder.bgw_notify_pid,
         };
 
+        #[cfg(feature = "gp7")]
+        let bgw = pg_sys::BackgroundWorker {
+            bgw_name: RpgffiChar::from(&builder.bgw_name[..]).0,
+            bgw_type: RpgffiChar::from(&builder.bgw_type[..]).0,
+            bgw_flags: builder.bgw_flags.bits(),
+            bgw_start_time: builder.bgw_start_time as u32,
+            bgw_restart_time: match builder.bgw_restart_time {
+                None => -1,
+                Some(d) => d.as_secs() as i32,
+            },
+            bgw_library_name: RpgffiChar::from(&builder.bgw_library_name[..]).0,
+            bgw_function_name: RpgffiChar::from(&builder.bgw_function_name[..]).0,
+            bgw_main_arg: builder.bgw_main_arg,
+            bgw_extra: RpgffiChar128::from(&builder.bgw_extra[..]).0,
+            bgw_notify_pid: builder.bgw_notify_pid,
+            bgw_start_rule: None,
+        };
+
         bgw
     }
 }
@@ -666,7 +687,8 @@ fn wait_latch(timeout: libc::c_long, wakeup_flags: WLflags) -> i32 {
     feature = "pg13",
     feature = "pg14",
     feature = "pg15",
-    feature = "pg16"
+    feature = "pg16",
+    feature = "gp7",
 ))]
 type RpgffiChar = RpgffiChar96;
 

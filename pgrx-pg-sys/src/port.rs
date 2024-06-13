@@ -73,7 +73,7 @@ pub const unsafe fn MAXALIGN(len: usize) -> usize {
 ///
 /// [`palloc`]: crate::palloc
 #[allow(non_snake_case)]
-#[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15"))]
+#[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15", feature = "gp7"))]
 pub unsafe fn GetMemoryChunkContext(pointer: *mut std::os::raw::c_void) -> pg_sys::MemoryContext {
     // Postgres versions <16 don't export the "GetMemoryChunkContext" function.  It's a "static inline"
     // function in `memutils.h`, so we port it to Rust right here
@@ -232,7 +232,7 @@ pub unsafe fn heap_tuple_get_struct<T>(htup: super::HeapTuple) -> *mut T {
 //
 // As a result, we redeclare their functions with the arguments they should have on earlier Postgres
 // and we route people to the old symbols they were using before on later ones.
-#[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15"))]
+#[cfg(any(feature = "pg12", feature = "pg13", feature = "pg14", feature = "pg15", feature = "gp7"))]
 #[::pgrx_macros::pg_guard]
 extern "C" {
     pub fn planstate_tree_walker(

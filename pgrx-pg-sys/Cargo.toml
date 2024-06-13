@@ -28,6 +28,7 @@ pg13 = [ ]
 pg14 = [ ]
 pg15 = [ ]
 pg16 = [ ]
+gp7 = [ ]
 cshim = [ ]
 
 [package.metadata.docs.rs]

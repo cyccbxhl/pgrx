@@ -25,6 +25,7 @@ pub mod cargo;
 
 pub static BASE_POSTGRES_PORT_NO: u16 = 28800;
 pub static BASE_POSTGRES_TESTING_PORT_NO: u16 = 32200;
+pub const GREENPLUM_VERSION_BASE: u16 = 100;
 
 /// The flags to specify to get a "C.UTF-8" locale on this system, or "C" locale on systems without
 /// a "C.UTF-8" locale equivalent.
@@ -209,7 +210,12 @@ impl PgConfig {
     }
 
     pub fn label(&self) -> eyre::Result<String> {
-        Ok(format!("pg{}", self.major_version()?))
+        let pg_major = self.major_version()?;
+        if pg_major < GREENPLUM_VERSION_BASE {
+            Ok(format!("pg{}", pg_major))
+        } else {
+            Ok(format!("gp{}", pg_major / GREENPLUM_VERSION_BASE))
+        }
     }
 
     pub fn path(&self) -> Option<PathBuf> {
@@ -270,8 +276,52 @@ impl PgConfig {
     }
 
     fn get_version(&self) -> eyre::Result<(u16, PgMinorVersion)> {
-        let version_string = self.run("--version")?;
-        Self::parse_version_str(&version_string)
+        if let Some(gp_major) = self.get_gp_version() {
+            Ok((gp_major * GREENPLUM_VERSION_BASE, PgMinorVersion::Latest))
+        } else {
+            let version_string = self.run("--version")?;
+            Self::parse_version_str(&version_string)
+        }
+    }
+
+    fn parse_gp_version_str(version_str: &str) -> eyre::Result<u16> {
+        let version_parts = version_str.split_whitespace().collect::<Vec<&str>>();
+        let gp_str = version_parts
+            .get(0)
+            .ok_or_else(|| eyre::eyre!(""))?;
+        assert_eq!(*gp_str, "Greenplum");
+
+        let version = version_parts
+            .get(1)
+            .ok_or_else(|| eyre!("invalid version string: {version_str}"))?
+            .split('+')
+            .collect::<Vec<&str>>();
+
+        // assert_eq!(version.len(), 2);
+        let gp_major_str = version
+            .get(0)
+            .ok_or_else(|| eyre::eyre!("no gp major in gp version str"))?
+            .split('.')
+            .next()
+            .ok_or_else(|| eyre::eyre!("invalid gp major"))?;
+
+        let gp_major = gp_major_str
+            .parse::<u16>()
+            .map_err(|_| eyre::eyre!("failed to parse gp major as u16"))?;
+
+        Ok(gp_major)
+    }
+
+    fn get_gp_version(&self) -> Option<u16> {
+        match self.run("--gp_version") {
+            Ok(gp_version_string) => {
+                match Self::parse_gp_version_str(&gp_version_string) {
+                    Ok(version) => Some(version),
+                    Err(_) => None,
+                }
+            }
+            Err(_) => None,
+        }
     }
 
     pub fn major_version(&self) -> eyre::Result<u16> {
@@ -606,10 +656,13 @@ impl Pgrx {
     }
 
     /// Returns true if the specified `label` represents a Postgres version number feature flag,
-    /// such as `pg14` or `pg15`
+    /// such as `pg14` or `pg15`, Greenplum version is supported now, that is `gp7`.
     pub fn is_feature_flag(&self, label: &str) -> bool {
         for pgver in SUPPORTED_VERSIONS() {
             if label == format!("pg{}", pgver.major) {
+                return true;
+            }
+            if label == format!("gp{}", pgver.major / GREENPLUM_VERSION_BASE) {
                 return true;
             }
         }
@@ -663,6 +716,7 @@ pub fn SUPPORTED_VERSIONS() -> Vec<PgVersion> {
         PgVersion::new(14, PgMinorVersion::Latest, None),
         PgVersion::new(15, PgMinorVersion::Latest, None),
         PgVersion::new(16, PgMinorVersion::Latest, None),
+        PgVersion::new(700, PgMinorVersion::Latest, None), // represent `gp7`
     ]
 }
 
@@ -797,6 +851,25 @@ fn parse_version() {
         PgConfig::parse_version_str("PostgresSQL 12.f").expect_err("Parsed invalid version string");
     let _ =
         PgConfig::parse_version_str("PostgresSQL .53").expect_err("Parsed invalid version string");
+}
+
+#[test]
+fn parse_gp_version() {
+    // Check some valid version strings
+    let gp_versions: Vec<(&str, u16)> = vec![
+        ("Greenplum 6.1.0+dev.190.g859250f5d0 build dev", 6),
+        ("Greenplum 6.3.0+dev.190.g859250f5d0 build dev", 6),
+        ("Greenplum 7.1.0+dev.190.g859250f5d0 build dev", 7),
+    ];
+    for (s, major_expected) in gp_versions {
+        let major =
+            PgConfig::parse_gp_version_str(s).expect("Unable to parse gp_version string");
+        assert_eq!(major, major_expected, "Major version should match");
+    }
+
+    // Check some invalid version strings
+    let _ = PgConfig::parse_version_str("10.22").expect_err("Parsed invalid gp_version string");
+    let _ = PgConfig::parse_version_str("PostgresSQL 10").expect_err("Parsed invalid gp_version string");
 }
 
 #[test]

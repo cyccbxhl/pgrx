@@ -186,7 +186,14 @@ impl Drop for OwnedMemoryContext {
             if ptr::eq(pg_sys::CurrentMemoryContext, self.owned) {
                 pg_sys::CurrentMemoryContext = self.previous;
             }
+            #[cfg(not(feature = "gp7"))]
             pg_sys::MemoryContextDelete(self.owned);
+            #[cfg(feature = "gp7")]
+            {
+                let file_cstr = std::ffi::CString::new(file!()).expect("Get __file__ failed");
+                pg_sys::MemoryContextDeleteImpl(self.owned, file_cstr.as_ptr(), std::ptr::null_mut(), line!() as i32);
+            }
+
         }
     }
 }
@@ -394,7 +401,13 @@ impl PgMemoryContexts {
                 let result = PgMemoryContexts::exec_in_context(context, f);
 
                 unsafe {
+                    #[cfg(not(feature = "gp7"))]
                     pg_sys::MemoryContextDelete(context);
+                    #[cfg(feature = "gp7")]
+                    {
+                        let file_cstr = std::ffi::CString::new(file!()).expect("Get __file__ failed");
+                        pg_sys::MemoryContextDeleteImpl(context, file_cstr.as_ptr(), std::ptr::null_mut(), line!() as i32);
+                    }
                 }
 
                 result

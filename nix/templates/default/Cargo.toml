@@ -9,17 +9,12 @@
 #LICENSE Use of this source code is governed by the MIT license that can be found in the LICENSE file.
  
 [package]
-name = "versioned_so"
-version = "0.0.0"
+name = "pgrx_demo"
+version = "0.0.1"
 edition = "2021"
-publish = false
 
 [lib]
-crate-type = ["cdylib", "lib"]
-
-[[bin]]
-name = "pgrx_embed_versioned_so"
-path = "./src/bin/pgrx_embed.rs"
+crate-type = ["cdylib"]
 
 [features]
 default = ["pg13"]
@@ -32,17 +27,18 @@ gp7 = ["pgrx/gp7", "pgrx-tests/gp7" ]
 pg_test = []
 
 [dependencies]
-pgrx = { path = "../../pgrx", default-features = false }
+pgrx = "=0.12.0-alpha.1"
 
 [dev-dependencies]
-pgrx-tests = { path = "../../pgrx-tests" }
+pgrx-tests = "=0.12.0-alpha.1"
+tempfile = "3.2.0"
+once_cell = "1.7.2"
 
-# uncomment these if compiling outside of 'pgrx'
-#[profile.dev]
-#panic = "unwind"
+[profile.dev]
+panic = "unwind"
 
-#[profile.release]
-#panic = "unwind"
-#opt-level = 3
-#lto = "fat"
-#codegen-units = 1
+[profile.release]
+panic = "unwind"
+opt-level = 3
+lto = "fat"
+codegen-units = 1
